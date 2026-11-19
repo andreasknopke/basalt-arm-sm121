@@ -32,7 +32,7 @@ cd basalt-vX.Y.Z-linux-x64                   # tar xzf the archive first; on Win
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-On Windows: `py -3 -m venv .venv` then `.venv\Scripts\pip install -r requirements.txt`. Then follow the README's quick start from the
+On Windows: `py -3 -m venv .venv` then `.venv\Scripts\pip install -r requirements.txt`. Then follow the [upstream README](../README.basalt.md)'s quick start from the
 model download on: `bin/basalt serve --config basalt_config.json`. `bin/basalt-bench` starts the `basalt` beside it and
 reads the archive's `data/bench`.
 

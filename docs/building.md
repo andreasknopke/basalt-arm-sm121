@@ -1,6 +1,6 @@
 # Building and testing
 
-The build commands are in the [README](../README.md). Windows: [platforms](platforms.md). Arm64 (Linux and Windows): [Arm64](arm64.md).
+The build commands are in the [upstream README](../README.basalt.md). Windows: [platforms](platforms.md). Arm64 (Linux and Windows): [Arm64](arm64.md).
 
 ## What is in the repository
 
