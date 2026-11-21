@@ -9,6 +9,7 @@
 #include "basalt/platform/file.hpp"
 #include "basalt/platform/memory.hpp"
 #include "models/hy4flash/context_policy.hpp"
+#include "basalt/prefill/moe_mmq.hpp"
 
 #include <cuda_runtime.h>
 
@@ -155,7 +156,15 @@ model::Result Hy4Model::plan(const model::LoadRequest& req, core::LoadPlan& read
         d.type = t.type;
         d.bytes = t.bytes;
         d.shape = t.shape;
-        if (cudaMalloc(&d.ptr, d.bytes) != cudaSuccess) return {model::Status::Error, "hy4flash: out of device memory loading " + name};
+        // MMQ's tile loads step along a row 256 values at a time, so it reads a row on to that multiple: a matrix
+        // whose rows are not (a per-head tensor's, e.g. attn_k_b [192, 512, 32]) runs past the allocation on its
+        // last row.  The guard bytes are zeroed, so the products are unchanged (the activations there are zero too).
+        const size_t guard = prefill::mmq::supported((int) t.type) && !t.shape.empty()
+                                 ? prefill::mmq::read_past_bytes((int) t.type, (int64_t) t.shape[0])
+                                 : 0;
+        if (cudaMalloc(&d.ptr, d.bytes + guard) != cudaSuccess) return {model::Status::Error, "hy4flash: out of device memory loading " + name};
+        if (guard && cudaMemset((uint8_t*) d.ptr + d.bytes, 0, guard) != cudaSuccess)
+            return {model::Status::Error, "hy4flash: cannot zero the MMQ guard of " + name};
         core::LoadItem it;
         it.file = file;
         it.off = t.offset;
