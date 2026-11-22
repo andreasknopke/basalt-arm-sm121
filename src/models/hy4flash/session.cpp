@@ -46,6 +46,7 @@
 #include <cstdio>
 #include <numeric>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <set>
 #include <utility>
@@ -60,6 +61,13 @@ namespace basalt::models::hy4flash {
 namespace {
 
 namespace bk = basalt::kernels;
+
+// BASALT_DBG_Q=1: triage of the `prefill mmq: quantize` fault - the prompt path's launch sizes against the
+// buffers they are sized by (xq1_/xq2_/B.tok are kLaunchRows rows wide, the ring is one slot per layer).
+bool dbg_q() {
+    static const bool on = std::getenv("BASALT_DBG_Q") != nullptr;
+    return on;
+}
 
 constexpr int kRowWidth = 576;                 // a cache row: 512 latent values and 64 rotated
 constexpr int kMaxChunk = 16384;               // rows a prompt chunk may carry (the residual streams and the experts' pairs)
@@ -362,9 +370,36 @@ public:
     // turn's new messages) keeps the card's expert slots, which its experts are staged from card to card, and makes its buffers
     // beside them: first in what the tier left free, then in the slots beside the base arena (shrink: the base keeps its
     // experts). A long prompt routes to every expert anyway: the tier lends all its slots for the chunk buffers and the ring.
+    // BASALT_DBG_Q: the branch that sized the chunk, and what the card had left for it.
+    void dbg_dump_buffers(int R) {
+        if (!dbg_q()) return;
+        static bool said = false;
+        if (said) return;
+        said = true;
+        namespace mmq = basalt::prefill::mmq;
+        basalt::log::info("basalt dbg", "bufs: R=%d A=%d K=%d L=%lld F=%lld E=%lld heads=%d n_ff=%lld",
+                          R, arows_, g_.n_used, (long long) g_.n_latent, (long long) g_.n_ff_exp, (long long) g_.n_embd,
+                          max_heads_, (long long) g_.n_ff);
+        basalt::log::info("basalt dbg", "bufs: xq1=%p(%zu) xq2=%p(%zu) mmq_xq=%p stage0=%p(%zu) stage1=%p(%zu) tok0=%p gu=%p h=%p pair_rows=%p pair_ident=%p xlat=%p ring=%p stride=%zu",
+                          (void*) xq1_, mmq::q8_bytes(kLaunchRows, g_.n_latent), (void*) xq2_, mmq::q8_bytes(kLaunchRows, g_.n_ff_exp),
+                          (void*) mmq_xq_, (void*) stage_[0].blobs, stride_ * kStageExperts, (void*) stage_[1].blobs,
+                          stride_ * kStageExperts, (void*) stage_[0].tok, (void*) gu_, (void*) h_, (void*) pair_rows_,
+                          (void*) pair_ident_, (void*) xlat_, (void*) ring_, stride_);
+    }
+    void log_open(const char* how, int64_t total) {
+        if (!dbg_q()) return;
+        size_t free_b = 0, total_b = 0;
+        cudaMemGetInfo(&free_b, &total_b);
+        basalt::log::info("basalt dbg", "open_prompt %s: prompt=%lld chunk=%d ring=%d backed=%lld tier_slots=%lld free_floor=%llu MiB free=%llu MiB",
+                          how, (long long) total, big_.rows, ring_ ? 1 : 0, (long long) backed_,
+                          tier_ ? (long long) tier_->slots() : -1LL,
+                          (unsigned long long) (tier_ ? tier_->free_floor() >> 20 : 0), (unsigned long long) (free_b >> 20));
+        dbg_dump_buffers(big_.rows);
+    }
     bool open_prompt(int total, std::string& err) {
         const double to = now_ms();
         struct L2 { double t; ~L2() { basalt::log::info("basalt hy4flash", "open_prompt %.0f ms", now_ms() - t); } } l2{to};
+        dbg_max_rows_ = 0;
         if (big_.rows) {
             use(big_);
             return true;
@@ -380,6 +415,7 @@ public:
                     if (make_bufs(big_, R, e)) {
                         use(big_);
                         lent_ = false;
+                        log_open("short", total);
                         return true;
                     }
             }
@@ -401,6 +437,7 @@ public:
                 if (ringed) ring_open();
                 if (!ringed || ring_) {
                     use(big_);
+                    log_open("partial_lend", total);
                     return true;
                 }
                 big_.release();
@@ -411,6 +448,7 @@ public:
             if (make_bufs(big_, R, err)) {
                 use(big_);
                 if (total >= kRingRows && tier_ && !ring_) ring_open();
+                log_open("lend_all", total);
                 return true;
             }
         if (tier_) {
@@ -418,6 +456,7 @@ public:
             tier_->reclaim(e);
             tier_->grow();
         }
+        log_open("none", total);
         return false;
     }
 
@@ -433,6 +472,10 @@ public:
         t_cpu_wait_ms_ = t_peer_wait_ms_ = t_gpu_wait_ms_ = 0;
         t_pre_ms_ = t_moe_ms_ = t_eng_ms_ = t_build_ms_ = t_issue_ms_ = t_att_ms_ = t_ffn_ms_ = 0;
         t_ring_ms_ = 0;
+        if (dbg_q())
+            basalt::log::info("basalt dbg", "chunk done: chunk_rows=%d widest launch=%lld of %d rows; backed=%lld tier_slots=%lld",
+                              big_.rows, (long long) dbg_max_rows_, kLaunchRows, (long long) backed_,
+                              tier_ ? (long long) tier_->slots() : -1LL);
         use(dec_);
         ring_close();
         big_.release();
@@ -853,7 +896,7 @@ private:
             if (loaded_.insert({w->type, n_out}).second) mmq::load(w->type, n_out);
             for (int r0 = 0; r0 < R; r0 += arows_) {
                 const int nb = std::min(arows_, R - r0);
-                mmq::quantize(x + (size_t) r0 * n_in, nullptr, mmq_xq_, w->type, n_in, n_in, nb, stream_);
+                mmq::quantize(x + (size_t) r0 * n_in, nullptr, mmq_xq_, w->type, n_in, n_in, nb, stream_, "quantize(gemm)");
                 mmq::Product p;
                 p.w = w->ptr;
                 p.type = w->type;
@@ -868,6 +911,7 @@ private:
                 p.max_rows = nb;
                 p.dst = y + (size_t) r0 * n_out;
                 p.ld_dst = n_out;
+                p.what = "gemm";
                 mmq_.run(p, stream_);
             }
             return;
@@ -887,7 +931,7 @@ private:
             // every head is an "expert" of the product with the R rows of the step: one quantisation and one launch for all heads
             head_major_ids(heads_ids_, heads_bounds_, H, R, stream_);
             const size_t mat = mmq::matrix_bytes(w->type, rows, k);
-            mmq::quantize(x, heads_ids_, mmq_xq_, w->type, k, x_head_stride, (int64_t) H * R, stream_);
+            mmq::quantize(x, heads_ids_, mmq_xq_, w->type, k, x_head_stride, (int64_t) H * R, stream_, "quantize(heads)");
             mmq::Product p;
             p.w = (const uint8_t*) w->ptr;
             p.type = w->type;
@@ -902,6 +946,7 @@ private:
             p.max_rows = R;
             p.dst = y;
             p.ld_dst = rows;
+            p.what = "heads";
             mmq_.run(p, stream_);
             return;
         }
@@ -1157,6 +1202,7 @@ private:
     static constexpr int kRingRows = 1024;
     static constexpr int kShortChunk = 512;   // the largest chunk of a short prompt, which keeps the card's expert slots
     bool lent_ = false;                       // the open prompt lent the tier's slots
+    int64_t dbg_max_rows_ = 0;                // BASALT_DBG_Q: the widest launch of the open chunk (diagnostics)
     uint8_t* ring_ = nullptr;
     cudaEvent_t ring_copied_[2] = {nullptr, nullptr}, ring_done_[2] = {nullptr, nullptr};
     int ring_layer_[2] = {-1, -1};
@@ -1164,9 +1210,20 @@ private:
     bool ring_ok_[2] = {false, false};
 
     size_t expert_ring_bytes() const { return 2 * (size_t) g_.n_expert * stride_; }
+    // Die Tile-Loader lesen am Zeilen-/Blockende des letzten Experten ueber dessen Blob hinaus (der Blob endet
+    // 128 B vor `stride_`, das Ende der letzten Zeile genau am Blob-Ende). Ohne Reserve landet das auf der ersten
+    // Seite hinter der Allokation — und die ist nicht gemappt: `prefill mmq: <produkt>: an illegal memory access`.
+    // 8 MiB Reserve (seitenaligned) nehmen jeden dieser Overreads auf. Der Ring ist der einzige Puffer, der exakt
+    // auf der 2-MiB-Grenze endet (2*512*stride_ = 1944 * 2 MiB); die Stage-Puffer haben von Haus aus Luft.
+    static constexpr size_t kRingPad = 8u << 20;
     void ring_open() {
+        // Der Ring ist abgeschaltet: das Lesen aus dem Ring faultet auf sm_121 mit "prefill mmq: <produkt>:
+        // an illegal memory access" (reproduzierbar, ~40 s, sobald ein Chunk einen grossen KV-Prefix wiederverwendet).
+        // Das Staging pro Layer kostet in der Messung nichts (20,8 s gegen 20,9 s fuer 16,5k Tokens), der Ring
+        // ist also kein Verlust — bis die Ursache gefunden ist. BASALT_RING=1 schaltet ihn zum Nachmessen wieder ein.
+        if (!std::getenv("BASALT_RING")) return;
         const size_t bytes = expert_ring_bytes();
-        if (cudaMalloc((void**) &ring_, bytes) != cudaSuccess) {
+        if (cudaMalloc((void**) &ring_, bytes + kRingPad) != cudaSuccess) {
             cudaGetLastError();
             ring_ = nullptr;
             basalt::log::info("basalt hy4flash", "no room for the expert ring (%.1f GB): the prompt stages its experts per layer", (double) bytes / 1e9);
@@ -1237,6 +1294,13 @@ private:
             else if (src.peer) cudaMemcpyPeerAsync(dst, m_.device(), src.peer, tier_->peer_for(tl)->device(), el.blob_bytes, copy_);
             else return false;
             ++e;
+        }
+        if (std::getenv("BASALT_DBG_Q")) {
+            const cudaError_t ec = cudaStreamSynchronize(copy_);
+            basalt::log::info("basalt dbg", "ring_copy tl=%d slot=%d experts=%d stride=%zu blob=%llu ring=%p base=%p end=%p err=%s",
+                              tl, slot, g_.n_expert, stride_, (unsigned long long) el.blob_bytes, (void*) ring_,
+                              (void*) base, (void*) (base + (size_t) g_.n_expert * stride_), cudaGetErrorString(ec));
+            if (ec != cudaSuccess) { cudaGetLastError(); return false; }
         }
         cudaEventRecord(ring_copied_[slot], copy_);
         return true;
@@ -1790,6 +1854,13 @@ private:
             err = "the prompt MMQ path does not cover this layer's expert formats";
             return false;
         }
+        if (dbg_q()) {
+            static std::set<int> said;
+            if (said.insert(l).second)
+                basalt::log::info("basalt dbg", "expert l=%d gu=%d d=%d L=%lld F=%lld blob=%zu gu_row=%zu up_row=%zu d_row=%zu down_off=%zu stride=%zu past_gu=%zu past_d=%zu",
+                                  l, el.gu_type, el.d_type, (long long) L, (long long) F, el.blob_bytes, lay.gu_row, lay.up_row,
+                                  lay.d_row, lay.down_off, stride_, mmq::read_past_bytes(el.gu_type, L), mmq::read_past_bytes(el.d_type, F));
+        }
         if (loaded_.insert({el.gu_type, 2 * F}).second) mmq::load(el.gu_type, 2 * F);
         if (loaded_.insert({el.d_type, L}).second) mmq::load(el.d_type, L);
         cudaStream_t st = stream_;
@@ -1864,9 +1935,21 @@ private:
         if (ringed && tl + 1 < g_.n_layers - g_.n_dense && ring_layer_[(tl + 1) & 1] == tl + 1) stage_away(tl + 1);
         auto launch = [&](Stage& B, const uint8_t* blobs, int nb, int64_t rows, int64_t max_rows, const std::vector<int32_t>& tok,
                           const std::vector<int32_t>& bounds) {
+            if (dbg_q() && rows > dbg_max_rows_) dbg_max_rows_ = rows;
+            if (dbg_q())
+                basalt::log::info("basalt dbg", "launch l=%d nb=%d rows=%lld max_rows=%lld blobs=%p blobs_end=%p",
+                                  l, nb, (long long) rows, (long long) max_rows, (const void*) blobs,
+                                  (const void*) (blobs + (size_t) nb * stride_));
+            if (rows > (int64_t) kLaunchRows)
+                basalt::log::error("basalt dbg", "moe launch: %lld rows exceed the %d rows xq1_/xq2_/tok hold (nb=%d max_rows=%lld layer %d)",
+                                   (long long) rows, kLaunchRows, nb, (long long) max_rows, l);
             put_i32(B.tok, tok.data(), tok.size());
             put_i32(B.bounds, bounds.data(), bounds.size());
-            mmq::quantize(xlat_, B.tok, xq1_, el.gu_type, L, L, rows, st);
+            if (dbg_q() && cudaStreamSynchronize(st) != cudaSuccess) {
+                const cudaError_t ce = cudaGetLastError();
+                basalt::log::error("basalt dbg", "PUT_I32 faulted: l=%d nb=%d rows=%lld: %s", l, nb, (long long) rows, cudaGetErrorString(ce));
+            }
+            mmq::quantize(xlat_, B.tok, xq1_, el.gu_type, L, L, rows, st, "quantize(moe-gu)");
             mmq::Product p;
             p.w = blobs;
             p.type = el.gu_type;
@@ -1881,12 +1964,17 @@ private:
             p.max_rows = max_rows;
             p.dst = gu_;
             p.ld_dst = p.w_rows;
+            p.what = "moe-gu";
             mmq_.run(p, st);
             // an NVFP4 blob's per-expert scales (its last 16 bytes), which the MMQ products leave out
             ExpertTails tails;
             if (el.gu_type == kTypeNvfp4) tails = ExpertTails{blobs, stride_, (size_t) el.blob_bytes - 16, B.bounds, nb};
             swiglu_split_clamped(gu_, h_, rows, F, g_.clamp_exp[(size_t) l], st, el.gu_type == kTypeNvfp4 ? &tails : nullptr);
-            mmq::quantize(h_, nullptr, xq2_, el.d_type, F, F, rows, st);
+            if (dbg_q() && cudaStreamSynchronize(st) != cudaSuccess) {
+                const cudaError_t ce = cudaGetLastError();
+                basalt::log::error("basalt dbg", "SWIGLU faulted: l=%d nb=%d rows=%lld: %s", l, nb, (long long) rows, cudaGetErrorString(ce));
+            }
+            mmq::quantize(h_, nullptr, xq2_, el.d_type, F, F, rows, st, "quantize(moe-down)");
             mmq::Product d;
             d.w = blobs + lay.down_off;
             d.type = el.d_type;
@@ -1901,6 +1989,7 @@ private:
             d.max_rows = max_rows;
             d.dst = pair_rows_;
             d.ld_dst = L;
+            d.what = "moe-down";
             mmq_.run(d, st);
             cudaEventRecord(B.done, st);
             pos += rows;
@@ -1954,6 +2043,10 @@ private:
                 const int e = used[b0 + (size_t) q];
                 uint8_t* dst = B.blobs + stride_ * (size_t) q;
                 const core::ExpertTier::Source src = tier_->locate(tl, e);
+                if (dbg_q())
+                    basalt::log::info("basalt dbg", "stage l=%d e=%d q=%d dev=%p pinned=%p peer=%p dst=%p bytes=%zu",
+                                      l, e, (const void*) src.dev, (const void*) src.pinned, (const void*) src.peer,
+                                      (void*) dst, el.blob_bytes);
                 if (src.dev) {
                     cudaMemcpyAsync(dst, src.dev, el.blob_bytes, cudaMemcpyDeviceToDevice, copy_);
                     ++n_stage_dev_;
@@ -1970,6 +2063,11 @@ private:
                 }
             }
             cudaEventRecord(B.copied, copy_);
+            if (dbg_q() && cudaStreamSynchronize(copy_) != cudaSuccess) {
+                const cudaError_t ce = cudaGetLastError();
+                basalt::log::error("basalt dbg", "STAGING COPY faulted: l=%d nb=%d rows=%lld: %s", l, nb, (long long) rows,
+                                   cudaGetErrorString(ce));
+            }
             std::vector<int32_t> tok, bounds{0};
             for (int q = 0; q < nb; ++q) {
                 for (int32_t p : by[(size_t) used[b0 + (size_t) q]]) {

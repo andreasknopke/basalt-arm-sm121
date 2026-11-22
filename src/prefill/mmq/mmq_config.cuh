@@ -313,22 +313,27 @@ static constexpr __host__ __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_conf
     CASE(GGML_TYPE_IQ4_NL, 256, 1, 128, 112, GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_0, MMQ_ITER_K, true, false);
     CASE(GGML_TYPE_IQ4_NL, 256, 1, 128, 128, GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_0, MMQ_ITER_K, true, false);
 
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,   8, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, true);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  16, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, true);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  32, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, true);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  64, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, true);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128, 128, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, true);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,   8, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  16, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  24, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  32, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  40, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  48, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  64, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  80, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  96, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128, 112, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
-    CASE(GGML_TYPE_NVFP4,  256, 1, 128, 128, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, true, false);
+    // NVFP4 runs the tiled path (stream_k = false): the stream-k variant faults on sm_121 in the Hy4-flash
+    // prompt path.  Measured: `mmq: an illegal memory access` in launch_mul_mat_q, on the moe-down product
+    // (NVFP4, w [1536,1536], n = 1, 834 rows, ids_dst + expert_bounds) while the same request runs through
+    // the tiled path; the fault is in the stream-k kernel itself (the staging copies, the mapped copies and
+    // the SwiGLU before it were ruled out with synchronised checks).  Prompt prefill times are unchanged.
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,   8, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, true);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  16, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, true);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  32, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, true);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  64, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, true);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128, 128, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, true);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,   8, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  16, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  24, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  32, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  40, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  48, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  64, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  80, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128,  96, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128, 112, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
+    CASE(GGML_TYPE_NVFP4,  256, 1, 128, 128, GGML_CUDA_MMQ_SRAM_LAYOUT_Q3_K, MMQ_ITER_K, false, false);
 
     return ggml_cuda_mmq_config(GGML_TYPE_COUNT, 256, 1, 128, 64, GGML_CUDA_MMQ_SRAM_LAYOUT_Q8_0, 256, false, true);
 }

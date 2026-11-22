@@ -237,11 +237,12 @@ size_t q8_bytes(int64_t rows, int64_t cols) {
 
 int64_t q8_blocks(int64_t cols) { return pad512(cols) / (4 * QK8_1); }
 
-void quantize(const float* x, const int32_t* ids, void* xq, int t, int64_t cols, int64_t ld, int64_t rows, void* stream) {
+void quantize(const float* x, const int32_t* ids, void* xq, int t, int64_t cols, int64_t ld, int64_t rows, void* stream,
+              const char* tag) {
     if (rows <= 0) return;
     quantize_mmq_q8_1_cuda(x, ids, xq, (ggml_type) t, cols, ld, rows * ld, rows * ld, pad512(cols), rows, 1, 1,
                            (cudaStream_t) stream);
-    ck(cudaGetLastError(), "quantize");
+    ck(cudaGetLastError(), tag);
 }
 
 Context::Context() {
@@ -255,6 +256,14 @@ void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
     const ggml_type t = (ggml_type) p.type;
     const int64_t qk = ggml_blck_size(t), bpr = p.w_cols / qk;
+    if (std::getenv("BASALT_DBG_Q")) {
+        size_t fb = 0, tb = 0;
+        cudaMemGetInfo(&fb, &tb);
+        basalt::log::info("basalt dbg", "mmq run %s: type=%d w=%p w_rows=%lld w_cols=%lld n=%d rows=%lld max_rows=%lld xq=%p dst=%p free=%llu MiB",
+                          p.what, p.type, (const void*) p.w, (long long) p.w_rows, (long long) p.w_cols, p.n,
+                          (long long) p.total_rows, (long long) p.max_rows, (const void*) p.xq, (void*) p.dst,
+                          (unsigned long long) (fb >> 20));
+    }
     // the grid always covers max_rows; opt_rows only picks the tile width
     const int64_t opt = p.opt_rows > 0 && p.opt_rows < p.max_rows ? p.opt_rows : p.max_rows;
     const mmq_args a = {(const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds, p.dst,
@@ -265,7 +274,7 @@ void Context::run(const Product& p, void* stream) {
     auto& ctx = *(ggml_backend_cuda_context*) ctx_;
     const cudaStream_t s = (cudaStream_t) stream;
     with_type(t, [&](auto c) { mul_mat_q_case<decltype(c)::value>(ctx, a, s); });
-    ck(cudaGetLastError(), "mul_mat_q");
+    ck(cudaGetLastError(), p.what);
 }
 
 void load(int t, int64_t w_rows) {

@@ -35,9 +35,10 @@ size_t q8_bytes(int64_t rows, int64_t cols);
 int64_t q8_blocks(int64_t cols);
 
 /// q8_1 activations for MMQ against weights of `ggml_type`: row i of the output is row ids[i] of x (or row i when
-/// ids is null); `x` has `ld` floats per row.
+/// ids is null); `x` has `ld` floats per row.  `tag` names the call site in a launch error (a sticky error is
+/// reported by the first launch that asks after it, so the tag is only exact with CUDA_LAUNCH_BLOCKING=1).
 void quantize(const float* x, const int32_t* ids, void* xq, int ggml_type, int64_t cols, int64_t ld, int64_t rows,
-              void* stream);
+              void* stream, const char* tag = "quantize");
 
 /// Rows ids[0..rows) of `xq` (`src_rows` rows quantized for MMQ, `cols` values each) into `dst` as `rows` rows: the same
 /// bytes `quantize` writes when given those ids.
@@ -61,6 +62,8 @@ struct Product {
     int64_t ld_dst = 0;
     /// The rows MMQ sizes its tile against (it takes its smallest tile of at least this many); 0: max_rows.
     int64_t opt_rows = 0;
+    /// Diagnostics only: the call site (a launch error names it).
+    const char* what = "?";
 };
 
 /// Readies on the current device every tile `Context::run` may launch for weights of `ggml_type` with `w_rows` rows (its
