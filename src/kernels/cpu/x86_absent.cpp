@@ -9,6 +9,7 @@
 #include "basalt/kernels/cpu/iq_avx512.hpp"
 #include "basalt/kernels/cpu/kq_avx2.hpp"
 #include "basalt/kernels/cpu/nvfp4_avx2.hpp"
+#include "basalt/kernels/cpu/swiglu.hpp"
 #include "basalt/kernels/cpu/nvfp4_avx512.hpp"
 #include "basalt/log.hpp"
 
@@ -61,15 +62,15 @@ void iq_exact_512_rows(int, const uint8_t*, size_t, int, const void* const*, int
 void iq4nl256_down_rows(const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     absent("iq4nl256_down_rows");
 }
-void nvfp4_512_gu_rows(const uint8_t*, size_t, size_t, int, float, float, float, const void* const*, int, float* const*, int,
-                       int) {
+void nvfp4_512_gu_rows(const uint8_t*, size_t, size_t, int, float, float, const SwiGlu&, const void* const*, int,
+                       float* const*, int, int) {
     absent("nvfp4_512_gu_rows");
 }
 void nvfp4_512_down_rows(const uint8_t*, size_t, int, float, const void* const*, int, float* const*, int, int) {
     absent("nvfp4_512_down_rows");
 }
-void nvfp4_256_gu_rows(const uint8_t*, size_t, size_t, int, float, float, float, const void* const*, int, float* const*, int,
-                       int) {
+void nvfp4_256_gu_rows(const uint8_t*, size_t, size_t, int, float, float, const SwiGlu&, const void* const*, int,
+                       float* const*, int, int) {
     absent("nvfp4_256_gu_rows");
 }
 void nvfp4_256_down_rows(const uint8_t*, size_t, int, float, const void* const*, int, float* const*, int, int) {
@@ -89,5 +90,19 @@ void q2_0_gguf_rows_multi_avx2(const uint8_t*, size_t, int, const ActQ* const*, 
 }
 void act_quant_q8_1(const float*, int, ActQ&) { absent("act_quant_q8_1"); }
 void act_quant_q8_1_avx2(const float*, int, ActQ&) { absent("act_quant_q8_1_avx2"); }
+
+// ---- ggml's MXFP8 CPU rows: prep and rows live in ggml_cpu_dots.c (AVX2 / AVX-512), which an Arm64 build does not
+// have; ggml_cpu_dots_neon.c carries the dot products, not this pair. Only a model with MXFP8 experts reaches them
+// (Inkling 2 Mini's layers 20..23 when its experts fall back to the CPU), and no model this fork runs has any, so a
+// call here is a build gap rather than a path: stop by name instead of computing something. The unsuffixed
+// names are ggml_cpu_dispatch.cpp's (it picks a set; on Arm64 no probe passes, so it never gets here).
+extern "C" void ggml_mxfp8_q8_0_prep_avx2(int, const void*, float*) { absent("ggml_mxfp8_q8_0_prep_avx2"); }
+extern "C" void ggml_mxfp8_q8_0_rows_avx2(int, const void*, size_t, const float* const*, int, float* const*, int, int) {
+    absent("ggml_mxfp8_q8_0_rows_avx2");
+}
+extern "C" void ggml_mxfp8_q8_0_prep_avx512(int, const void*, float*) { absent("ggml_mxfp8_q8_0_prep_avx512"); }
+extern "C" void ggml_mxfp8_q8_0_rows_avx512(int, const void*, size_t, const float* const*, int, float* const*, int, int) {
+    absent("ggml_mxfp8_q8_0_rows_avx512");
+}
 
 }  // namespace basalt::kernels::cpu

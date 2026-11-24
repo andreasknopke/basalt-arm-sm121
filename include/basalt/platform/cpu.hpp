@@ -43,5 +43,8 @@ CpuInfo cpu_info();
 bool cpu_has_arm_dotprod();
 /// Arm64: whether it also has the int8 matrix multiply extension (I8MM: smmla, usdot). False on x86-64.
 bool cpu_has_arm_i8mm();
+/// The logical processors that share each last-level (L3) cache, one group per cache in the OS's order: an AMD CCD, or an
+/// Intel die. Processors are named as above. Empty when the OS does not say.
+std::vector<std::vector<int>> cpu_l3_groups();
 
 }  // namespace basalt::platform
