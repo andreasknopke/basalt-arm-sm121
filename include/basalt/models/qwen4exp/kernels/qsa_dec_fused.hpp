@@ -6,7 +6,7 @@
 //                     indexer keys in order (native_qsa_indexer_append)
 //   qsa_dec_q_post    the query heads out of q_full with norm + RoPE, the indexer query heads with norm + RoPE
 //
-// INT8 K/V without rotation only (qsa_dec_kv_post_supported).
+// INT8 K/V without rotation, or resident FP16 K/V in a batch window (qsa_dec_kv_post_supported).
 #pragma once
 
 #include "basalt/models/qwen4exp/kernels/kv_stream.hpp"
@@ -26,6 +26,7 @@ struct QsaDecKvPost {
     const int32_t* steps = nullptr;     ///< [n][kStepCount]: each row's cell at kStepPos
     int8_t *k_q = nullptr, *v_q = nullptr;
     uint16_t *k_scale = nullptr, *v_scale = nullptr;
+    uint16_t *k_pool = nullptr, *v_pool = nullptr;  ///< FP16 pools when k_q is null (a resident FP16 batch window)
     const int32_t* page_table = nullptr;
     KvHostPools host;                   ///< the host copy, when the cache streams
     const float* idx_raw = nullptr;     ///< [n][idx_dim] raw indexer keys; null: no indexer (a dense layer)
