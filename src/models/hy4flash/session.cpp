@@ -2461,7 +2461,7 @@ private:
                 const core::ExpertTier::Source src = tier_->locate(tl, e);
                 if (dbg_q())
                     basalt::log::info("basalt dbg", "stage l=%d e=%d q=%d dev=%p pinned=%p peer=%p dst=%p bytes=%zu",
-                                      l, e, (const void*) src.dev, (const void*) src.pinned, (const void*) src.peer,
+                                      l, e, q, (const void*) src.dev, (const void*) src.pinned, (const void*) src.peer,
                                       (void*) dst, el.blob_bytes);
                 if (src.dev) {
                     cudaMemcpyAsync(dst, src.dev, el.blob_bytes, cudaMemcpyDeviceToDevice, copy_);
